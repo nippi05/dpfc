@@ -1,11 +1,19 @@
 const std = @import("std");
 const cli = @import("zig-cli");
 
-var config = struct {
-    path: []const u8 = ".",
-    ignore_hidden: bool = false,
-    recursive: bool = false,
-}{};
+const Config = struct {
+    path: []const u8,
+    ignore_hidden: bool,
+    recursive: bool,
+    use_abs_path: bool,
+};
+
+var global_config = Config{
+    .path = ".",
+    .ignore_hidden = false,
+    .recursive = true,
+    .use_abs_path = false,
+};
 
 pub fn main() !void {
     var r = try cli.AppRunner.init(std.heap.page_allocator);
@@ -13,69 +21,102 @@ pub fn main() !void {
     const app = cli.App{
         .command = cli.Command{
             .name = "dpfc",
+            .description = .{
+                .one_line = "DuPlicate File Checker",
+                .detailed =
+                \\Check for duplicate files in a given directory
+                \\With options to skip hidden files, search only
+                \\in one folder or recursively and outputting 
+                \\relative or abs path.
+                ,
+            },
             .options = &.{
                 // Define an Option for the "host" command-line argument.
                 .{
                     .long_name = "path",
                     .short_alias = 'p',
                     .help = "path to folder to search (default=.)",
-                    .value_ref = r.mkRef(&config.path),
+                    .value_ref = r.mkRef(&global_config.path),
                 },
 
                 .{
                     .long_name = "ignore-hidden",
                     .short_alias = 'i',
-                    .help = "whether to ignore hidden files starting with dot(.). (default=false)",
-                    .value_ref = r.mkRef(&config.ignore_hidden),
+                    .help = "ignore hidden files starting with dot. (default=false)",
+                    .value_ref = r.mkRef(&global_config.ignore_hidden),
                 },
 
                 .{
                     .long_name = "recursive",
                     .short_alias = 'r',
-                    .help = "whether to check folders recursively (default=false)",
-                    .value_ref = r.mkRef(&config.recursive),
+                    .help = "check folders recursively (default=true)",
+                    .value_ref = r.mkRef(&global_config.recursive),
+                },
+
+                .{
+                    .long_name = "absolute-path",
+                    .short_alias = 'a',
+                    .help = "ouput absolute path instead of relative path (default=false)",
+                    .value_ref = r.mkRef(&global_config.use_abs_path),
                 },
             },
             .target = cli.CommandTarget{
-                .action = cli.CommandAction{ .exec = runDpfc },
+                .action = cli.CommandAction{ .exec = start_point },
             },
         },
     };
     return r.run(&app);
 }
 
-fn runDpfc() !void {
+fn start_point() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+    try dpfc(allocator, std.io.getStdOut(), global_config);
+}
 
-    const stdout_file = std.io.getStdOut().writer();
+fn dpfc(allocator: std.mem.Allocator, output_file: std.fs.File, config: Config) !void {
+    if (!config.recursive or config.use_abs_path) {
+        unreachable; // Unimplemented
+    }
+
+    const stdout_file = output_file.writer();
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout = bw.writer();
 
     const cwd = std.fs.cwd();
-    const opened_dir = try std.fs.Dir.openDir(cwd, config.path, .{ .iterate = true });
+    const opened_dir = try std.fs.Dir.openDir(
+        cwd,
+        config.path,
+        .{ .iterate = true },
+    );
 
     // TODO(Not that important): Validate that an arrayhashmap is fastest here
-    var file_sums = std.AutoHashMap(u64, []u8).init(allocator);
-    defer file_sums.deinit();
+    var file_hashes = std.AutoHashMap(u64, []u8)
+        .init(allocator);
+    defer file_hashes.deinit();
+
     var walker = try std.fs.Dir.walk(opened_dir, allocator);
     defer walker.deinit();
 
+    // Arena allocator because everything should be freed at the same time anyways.
     var arena_allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
 
     while (try walker.next()) |entry| {
-        if (entry.kind == .directory) {
+        if (entry.kind == .directory or (config.ignore_hidden and entry.basename[0] == '.')) {
             continue;
         }
-        const memory = try arena.alloc(u8, entry.path.len);
-        @memcpy(memory, entry.path);
+        const persistent_path = try arena.alloc(u8, entry.path.len);
+        @memcpy(persistent_path, entry.path);
 
-        const file_sum = try get_hash(&entry);
+        const current_hash = try get_hash(&entry);
 
-        if (try file_sums.fetchPut(file_sum, memory)) |prev| {
-            try stdout.print("{s} and {s} are duplicates\n", .{ prev.value, entry.path });
+        if (try file_hashes.fetchPut(current_hash, persistent_path)) |prev| {
+            try stdout.print("{s} and {s} are duplicates\n", .{
+                prev.value,
+                entry.path,
+            });
         }
     }
 
