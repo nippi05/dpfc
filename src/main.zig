@@ -75,7 +75,7 @@ fn start_point() !void {
 }
 
 fn dpfc(allocator: std.mem.Allocator, output_file: std.fs.File, config: Config) !void {
-    if (!config.recursive or config.use_abs_path) {
+    if (!config.recursive) {
         unreachable; // Unimplemented
     }
 
@@ -107,15 +107,22 @@ fn dpfc(allocator: std.mem.Allocator, output_file: std.fs.File, config: Config) 
         if (entry.kind == .directory or (config.ignore_hidden and entry.basename[0] == '.')) {
             continue;
         }
-        const persistent_path = try arena.alloc(u8, entry.path.len);
-        @memcpy(persistent_path, entry.path);
+        // This could be written in a simpler way maybe?
+        var persistent_path: []u8 = undefined;
+        if (config.use_abs_path) {
+            persistent_path = try opened_dir.realpathAlloc(arena, entry.path);
+        } else {
+            const temp_path = try arena.alloc(u8, entry.path.len);
+            @memcpy(temp_path, entry.path);
+            persistent_path = temp_path;
+        }
 
         const current_hash = try get_hash(&entry);
 
         if (try file_hashes.fetchPut(current_hash, persistent_path)) |prev| {
             try stdout.print("{s} and {s} are duplicates\n", .{
                 prev.value,
-                entry.path,
+                persistent_path,
             });
         }
     }
