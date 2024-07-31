@@ -135,7 +135,7 @@ fn get_hash(entry: *const std.fs.Dir.Walker.Entry) !u64 {
     var br = std.io.bufferedReader(file.reader());
     var reader = br.reader();
     var buffer: [4096]u8 = undefined; // TODO check if 4096 is optimal (or close to it)
-    var hasher = std.hash.XxHash64.init(0); // TODO make this either 64 or 32 bit version
+    var hasher = std.hash.XxHash64.init(0);
     while (try reader.read(&buffer) != 0) { // When returning 0 it has read the whole file
         hasher.update(&buffer);
     }
